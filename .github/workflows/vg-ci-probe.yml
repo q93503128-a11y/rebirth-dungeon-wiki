@@ -43,7 +43,16 @@ jobs:
               'part-02-0': 'a20baf7afa82189ed992d279e9a97f387fb0f9510af2e2d89ee96acf305fc5a8',
               'part-02-1': '2da374be51c4fdcb94907ecd0104e5c07f0ea853df2bdfa8f0076e674152de56',
               'part-02-2': 'afc64cd4ed420bb7789acab83a9942b2c0dbbdf84b63849fc56e02b809be870e',
-              'part-02-3': 'c2dcf4396a2769e7a470302c3155e981d0b1b7c98c2b2ed07f96dc524127a5e7',
+              'part-02-3-0': '27509e39a106d90d43ea7c2240229d6d048efc063fc1bd0d53ac1fb1cdc41c80',
+              'part-02-3-1': 'aa0dc78494d577a4cc9faac893c3cb13fc4e35e683469d58c9ef5b5a39109961',
+              'part-02-3-2': '0d39532434443de28979d6fb727c8c10f6f1032cb3d072abed43fa42361bb9ff',
+              'part-02-3-3': '6d0db3f4f3131186b8a9f9ecb643781388a111ca2904e82eef36ac93c6ccd9b7',
+              'part-02-3-4': '3f8d140e10b2515237770e2f3c6c0d0bdd223c935cc35e6d5ac50d3503e2cc5d',
+              'part-02-3-5': 'c32a41c7cfec824698ebc3e40cf666af9e27fd11707376190071835948e0b60e',
+              'part-02-3-6': '014db73548a01127e3fb09d90b8ba27f72a2cb50eb19d26dcfe9d68e5aa0c391',
+              'part-02-3-7': '66ecdc3f68f4542ada397b124a1e1029908df3d74eb8e42eb2078b38cc6d5181',
+              'part-02-3-8': '2d4a77bb2e1b86c7c8aeb36227b7b25f2d16168f5c3a03cb7fceead267e226ae',
+              'part-02-3-9': '799b16b7d88432c46988f55c16ea13d997039c89350ae86d456f9e988d9aaf7a',
               'part-02-4': '0e0843a6c2e7ffe11b8cd0286e1916ee70697ea1722716c9b0f24bb9ee968be6',
               'part-02-5': '6947ecdd99de2f1de4b8a9e6bbabf790e2bb8c3226a192e9dc443467657284b4',
               'part-02b': '2c7d811e67bfc9188799e9daefc3f592b9378a0d06acce83da0cbd64fd2130be',
@@ -55,11 +64,17 @@ jobs:
           chunks = []
           for path in sorted(Path('vg-payload').glob('part-*')):
               raw_chunk = b''.join(path.read_bytes().split())
-              candidates = [raw_chunk]
-              if path.name.startswith('part-02-') and len(raw_chunk) > 1000:
-                  candidates.extend([raw_chunk[:1000], raw_chunk[-1000:]])
               target = expected[path.name]
-              chunk = next((candidate for candidate in candidates if hashlib.sha256(candidate).hexdigest() == target), None)
+              sizes = [len(raw_chunk)]
+              if path.name.startswith('part-02-3-'):
+                  sizes.append(100)
+              elif path.name.startswith('part-02-'):
+                  sizes.append(1000)
+              candidates = [raw_chunk]
+              for size in sizes[1:]:
+                  if len(raw_chunk) >= size:
+                      candidates.extend([raw_chunk[:size], raw_chunk[-size:]])
+              chunk = next((c for c in candidates if hashlib.sha256(c).hexdigest() == target), None)
               if chunk is None:
                   print(path.name, len(raw_chunk), hashlib.sha256(raw_chunk).hexdigest())
                   raise SystemExit(f'payload mismatch: {path.name}')
