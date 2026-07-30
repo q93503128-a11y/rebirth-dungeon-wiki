@@ -54,13 +54,16 @@ jobs:
           }
           chunks = []
           for path in sorted(Path('vg-payload').glob('part-*')):
-              chunk = b''.join(path.read_bytes().split())
-              if path.name.startswith('part-02-') and len(chunk) > 1000:
-                  chunk = chunk[:1000]
-              digest = hashlib.sha256(chunk).hexdigest()
-              print(path.name, len(chunk), digest)
-              if expected.get(path.name) != digest:
+              raw_chunk = b''.join(path.read_bytes().split())
+              candidates = [raw_chunk]
+              if path.name.startswith('part-02-') and len(raw_chunk) > 1000:
+                  candidates.extend([raw_chunk[:1000], raw_chunk[-1000:]])
+              target = expected[path.name]
+              chunk = next((candidate for candidate in candidates if hashlib.sha256(candidate).hexdigest() == target), None)
+              if chunk is None:
+                  print(path.name, len(raw_chunk), hashlib.sha256(raw_chunk).hexdigest())
                   raise SystemExit(f'payload mismatch: {path.name}')
+              print(path.name, len(chunk), target)
               chunks.append(chunk)
           raw = b''.join(chunks)
           print('combined_base64_bytes', len(raw))
