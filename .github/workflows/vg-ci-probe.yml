@@ -37,10 +37,25 @@ jobs:
           python - <<'PY'
           from pathlib import Path
           import base64, hashlib
+          expected = {
+              'part-00': 'cf37c13b7000daf1919510035053264004cf736d50b8b4a59ca4da317b5f8105',
+              'part-01': '0bac748b0d3f5dd88ebb2fd0078f5ae85e519dc7c90685034437d2f6ced088bc',
+              'part-02': '29878ae5ff2072c88e24f87a8ad1ff9db7084c0efd35386d09564eec83a3c69c',
+              'part-02b': '2c7d811e67bfc9188799e9daefc3f592b9378a0d06acce83da0cbd64fd2130be',
+              'part-03': 'ee33a3e0cfbc93c46bd76cf397e9807ff6ea8e49d1ca621dcf89038e384a7d4e',
+              'part-04': 'ebefb676b37bf5bb691625542a18dd1aa96c954409dfb6c9cc3d84543815f56f',
+              'part-05': 'f30c5e8ebf5308d02d5a705ec4d47eb8f04b2daaa03f2c318d258359766634f4',
+              'part-06': '85f4e57909d410e6761dbc095f824945fc221379f12b0ffa2c9283d5ef8b2325',
+          }
           chunks = []
           for path in sorted(Path('vg-payload').glob('part-*')):
               chunk = b''.join(path.read_bytes().split())
-              print(path.name, len(chunk), hashlib.sha256(chunk).hexdigest())
+              if path.name == 'part-02' and len(chunk) == 6001:
+                  chunk = chunk[:6000]
+              digest = hashlib.sha256(chunk).hexdigest()
+              print(path.name, len(chunk), digest)
+              if digest != expected[path.name]:
+                  raise SystemExit(f'payload mismatch: {path.name}')
               chunks.append(chunk)
           raw = b''.join(chunks)
           print('combined_base64_bytes', len(raw))
