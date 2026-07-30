@@ -34,8 +34,23 @@ jobs:
         shell: bash
         run: |
           set -euo pipefail
-          cat vg-payload/part-* | base64 -d > vg.tar.xz
+          wc -c vg-payload/part-*
+          sha256sum vg-payload/part-*
+          cat vg-payload/part-* > vg.b64
+          python - <<'PY'
+          from pathlib import Path
+          import base64
+          raw = Path('vg.b64').read_bytes()
+          print('combined_base64_bytes', len(raw))
+          try:
+              data = base64.b64decode(raw, validate=True)
+          except Exception as exc:
+              print('base64_error', repr(exc))
+              raise
+          Path('vg.tar.xz').write_bytes(data)
+          PY
           ACTUAL_SHA="$(sha256sum vg.tar.xz | cut -d' ' -f1)"
+          echo "archive_sha=$ACTUAL_SHA"
           test "$ACTUAL_SHA" = "3c0423ca5fd7dad8a8afd1778e7c44fa2eb05aff94e826354b5957e749127194"
           rm -rf vg-build
           mkdir vg-build
