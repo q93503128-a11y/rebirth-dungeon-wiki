@@ -40,7 +40,12 @@ jobs:
           expected = {
               'part-00': 'cf37c13b7000daf1919510035053264004cf736d50b8b4a59ca4da317b5f8105',
               'part-01': '0bac748b0d3f5dd88ebb2fd0078f5ae85e519dc7c90685034437d2f6ced088bc',
-              'part-02': '29878ae5ff2072c88e24f87a8ad1ff9db7084c0efd35386d09564eec83a3c69c',
+              'part-02-0': 'a20baf7afa82189ed992d279e9a97f387fb0f9510af2e2d89ee96acf305fc5a8',
+              'part-02-1': '2da374be51c4fdcb94907ecd0104e5c07f0ea853df2bdfa8f0076e674152de56',
+              'part-02-2': 'afc64cd4ed420bb7789acab83a9942b2c0dbbdf84b63849fc56e02b809be870e',
+              'part-02-3': 'c2dcf4396a2769e7a470302c3155e981d0b1b7c98c2b2ed07f96dc524127a5e7',
+              'part-02-4': '0e0843a6c2e7ffe11b8cd0286e1916ee70697ea1722716c9b0f24bb9ee968be6',
+              'part-02-5': '6947ecdd99de2f1de4b8a9e6bbabf790e2bb8c3226a192e9dc443467657284b4',
               'part-02b': '2c7d811e67bfc9188799e9daefc3f592b9378a0d06acce83da0cbd64fd2130be',
               'part-03': 'ee33a3e0cfbc93c46bd76cf397e9807ff6ea8e49d1ca621dcf89038e384a7d4e',
               'part-04': 'ebefb676b37bf5bb691625542a18dd1aa96c954409dfb6c9cc3d84543815f56f',
@@ -50,21 +55,20 @@ jobs:
           chunks = []
           for path in sorted(Path('vg-payload').glob('part-*')):
               chunk = b''.join(path.read_bytes().split())
-              if path.name == 'part-02' and len(chunk) == 6001:
-                  chunk = chunk[:6000]
               digest = hashlib.sha256(chunk).hexdigest()
               print(path.name, len(chunk), digest)
-              if digest != expected[path.name]:
+              if expected.get(path.name) != digest:
                   raise SystemExit(f'payload mismatch: {path.name}')
               chunks.append(chunk)
           raw = b''.join(chunks)
           print('combined_base64_bytes', len(raw))
           data = base64.b64decode(raw, validate=True)
           Path('vg.tar.xz').write_bytes(data)
-          print('archive_sha', hashlib.sha256(data).hexdigest())
+          digest = hashlib.sha256(data).hexdigest()
+          print('archive_sha', digest)
+          if digest != '3c0423ca5fd7dad8a8afd1778e7c44fa2eb05aff94e826354b5957e749127194':
+              raise SystemExit('archive hash mismatch')
           PY
-          ACTUAL_SHA="$(sha256sum vg.tar.xz | cut -d' ' -f1)"
-          test "$ACTUAL_SHA" = "3c0423ca5fd7dad8a8afd1778e7c44fa2eb05aff94e826354b5957e749127194"
           rm -rf vg-build
           mkdir vg-build
           tar -xJf vg.tar.xz -C vg-build
