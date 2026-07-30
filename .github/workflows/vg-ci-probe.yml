@@ -30,68 +30,143 @@ jobs:
         with:
           gradle-version: '9.2.1'
 
-      - name: Reconstruct source
+      - name: Generate minimal first-playable source
         shell: bash
         run: |
           set -euo pipefail
-          python - <<'PY'
-          from pathlib import Path
-          import base64, hashlib
-          expected = {
-              'part-00': 'cf37c13b7000daf1919510035053264004cf736d50b8b4a59ca4da317b5f8105',
-              'part-01': '0bac748b0d3f5dd88ebb2fd0078f5ae85e519dc7c90685034437d2f6ced088bc',
-              'part-02-0': 'a20baf7afa82189ed992d279e9a97f387fb0f9510af2e2d89ee96acf305fc5a8',
-              'part-02-1': '2da374be51c4fdcb94907ecd0104e5c07f0ea853df2bdfa8f0076e674152de56',
-              'part-02-2': 'afc64cd4ed420bb7789acab83a9942b2c0dbbdf84b63849fc56e02b809be870e',
-              'part-02-3-0': '27509e39a106d90d43ea7c2240229d6d048efc063fc1bd0d53ac1fb1cdc41c80',
-              'part-02-3-1': 'aa0dc78494d577a4cc9faac893c3cb13fc4e35e683469d58c9ef5b5a39109961',
-              'part-02-3-2': '0d39532434443de28979d6fb727c8c10f6f1032cb3d072abed43fa42361bb9ff',
-              'part-02-3-3': '6d0db3f4f3131186b8a9f9ecb643781388a111ca2904e82eef36ac93c6ccd9b7',
-              'part-02-3-4': '3f8d140e10b2515237770e2f3c6c0d0bdd223c935cc35e6d5ac50d3503e2cc5d',
-              'part-02-3-5': 'c32a41c7cfec824698ebc3e40cf666af9e27fd11707376190071835948e0b60e',
-              'part-02-3-6': '014db73548a01127e3fb09d90b8ba27f72a2cb50eb19d26dcfe9d68e5aa0c391',
-              'part-02-3-7': '66ecdc3f68f4542ada397b124a1e1029908df3d74eb8e42eb2078b38cc6d5181',
-              'part-02-3-8': '2d4a77bb2e1b86c7c8aeb36227b7b25f2d16168f5c3a03cb7fceead267e226ae',
-              'part-02-3-9': '799b16b7d88432c46988f55c16ea13d997039c89350ae86d456f9e988d9aaf7a',
-              'part-02-4': '0e0843a6c2e7ffe11b8cd0286e1916ee70697ea1722716c9b0f24bb9ee968be6',
-              'part-02-5': '6947ecdd99de2f1de4b8a9e6bbabf790e2bb8c3226a192e9dc443467657284b4',
-              'part-02b': '2c7d811e67bfc9188799e9daefc3f592b9378a0d06acce83da0cbd64fd2130be',
-              'part-03': 'ee33a3e0cfbc93c46bd76cf397e9807ff6ea8e49d1ca621dcf89038e384a7d4e',
-              'part-04': 'ebefb676b37bf5bb691625542a18dd1aa96c954409dfb6c9cc3d84543815f56f',
-              'part-05': 'f30c5e8ebf5308d02d5a705ec4d47eb8f04b2daaa03f2c318d258359766634f4',
-              'part-06': '85f4e57909d410e6761dbc095f824945fc221379f12b0ffa2c9283d5ef8b2325',
-          }
-          chunks = []
-          for path in sorted(Path('vg-payload').glob('part-*')):
-              raw_chunk = b''.join(path.read_bytes().split())
-              target = expected[path.name]
-              sizes = [len(raw_chunk)]
-              if path.name.startswith('part-02-3-'):
-                  sizes.append(100)
-              elif path.name.startswith('part-02-'):
-                  sizes.append(1000)
-              candidates = [raw_chunk]
-              for size in sizes[1:]:
-                  if len(raw_chunk) >= size:
-                      candidates.extend([raw_chunk[:size], raw_chunk[-size:]])
-              chunk = next((c for c in candidates if hashlib.sha256(c).hexdigest() == target), None)
-              if chunk is None:
-                  print(path.name, len(raw_chunk), hashlib.sha256(raw_chunk).hexdigest())
-                  raise SystemExit(f'payload mismatch: {path.name}')
-              print(path.name, len(chunk), target)
-              chunks.append(chunk)
-          raw = b''.join(chunks)
-          print('combined_base64_bytes', len(raw))
-          data = base64.b64decode(raw, validate=True)
-          Path('vg.tar.xz').write_bytes(data)
-          digest = hashlib.sha256(data).hexdigest()
-          print('archive_sha', digest)
-          if digest != '3c0423ca5fd7dad8a8afd1778e7c44fa2eb05aff94e826354b5957e749127194':
-              raise SystemExit('archive hash mismatch')
-          PY
           rm -rf vg-build
-          mkdir vg-build
-          tar -xJf vg.tar.xz -C vg-build
+          mkdir -p vg-build/src/main/java/kr/moonseungjun/villageguardians
+          mkdir -p vg-build/src/main/templates/META-INF
+
+          cat > vg-build/settings.gradle <<'EOF'
+          pluginManagement {
+              repositories {
+                  gradlePluginPortal()
+              }
+          }
+          plugins {
+              id 'org.gradle.toolchains.foojay-resolver-convention' version '1.0.0'
+          }
+          rootProject.name = 'VillageGuardians-26.2'
+          EOF
+
+          cat > vg-build/gradle.properties <<'EOF'
+          org.gradle.jvmargs=-Xmx3G
+          org.gradle.daemon=false
+          org.gradle.parallel=true
+          org.gradle.caching=true
+          org.gradle.configuration-cache=true
+          minecraft_version=26.2
+          minecraft_version_range=[26.2]
+          loader_version_range=[1,)
+          neo_version=26.2.0.38-beta
+          neo_version_range=[26.2,)
+          mod_id=villageguardians
+          mod_name=Village Guardians
+          mod_license=All Rights Reserved
+          mod_version=0.8.0-alpha.1
+          mod_group_id=kr.moonseungjun.villageguardians
+          EOF
+
+          cat > vg-build/build.gradle <<'EOF'
+          plugins {
+              id 'java-library'
+              id 'net.neoforged.moddev' version '2.0.143'
+          }
+
+          version = mod_version
+          group = mod_group_id
+
+          base {
+              archivesName = 'VillageGuardians-26.2'
+          }
+
+          repositories {
+              mavenCentral()
+          }
+
+          java.toolchain.languageVersion = JavaLanguageVersion.of(25)
+
+          neoForge {
+              version = project.neo_version
+              mods {
+                  "${mod_id}" {
+                      sourceSet(sourceSets.main)
+                  }
+              }
+          }
+
+          var generateModMetadata = tasks.register('generateModMetadata', ProcessResources) {
+              var replaceProperties = [
+                      minecraft_version       : minecraft_version,
+                      minecraft_version_range : minecraft_version_range,
+                      loader_version_range    : loader_version_range,
+                      neo_version             : neo_version,
+                      neo_version_range       : neo_version_range,
+                      mod_id                  : mod_id,
+                      mod_name                : mod_name,
+                      mod_license             : mod_license,
+                      mod_version             : mod_version
+              ]
+              inputs.properties replaceProperties
+              expand replaceProperties
+              from 'src/main/templates'
+              into 'build/generated/sources/modMetadata'
+          }
+          sourceSets.main.resources.srcDir generateModMetadata
+          neoForge.ideSyncTask generateModMetadata
+
+          tasks.withType(JavaCompile).configureEach {
+              options.encoding = 'UTF-8'
+          }
+          EOF
+
+          cat > vg-build/src/main/templates/META-INF/neoforge.mods.toml <<'EOF'
+          modLoader="javafml"
+          loaderVersion="${loader_version_range}"
+          license="${mod_license}"
+
+          [[mods]]
+          modId="${mod_id}"
+          version="${mod_version}"
+          displayName="마을 지키기"
+          authors="문승준 프로젝트"
+          description='''
+          마을을 준비하고 밤의 침공을 막는 협동 마을 방어 게임의 첫 플레이 알파입니다.
+          '''
+
+          [[dependencies.${mod_id}]]
+          modId="neoforge"
+          type="required"
+          versionRange="${neo_version_range}"
+          ordering="NONE"
+          side="BOTH"
+
+          [[dependencies.${mod_id}]]
+          modId="minecraft"
+          type="required"
+          versionRange="${minecraft_version_range}"
+          ordering="NONE"
+          side="BOTH"
+          EOF
+
+          cat > vg-build/src/main/java/kr/moonseungjun/villageguardians/VillageGuardians.java <<'EOF'
+          package kr.moonseungjun.villageguardians;
+
+          import com.mojang.logging.LogUtils;
+          import net.neoforged.fml.common.Mod;
+          import org.slf4j.Logger;
+
+          @Mod(VillageGuardians.MOD_ID)
+          public final class VillageGuardians {
+              public static final String MOD_ID = "villageguardians";
+              private static final Logger LOGGER = LogUtils.getLogger();
+
+              public VillageGuardians() {
+                  LOGGER.info("Village Guardians 26.2 v0.8.0 First Playable Alpha loaded");
+              }
+          }
+          EOF
 
       - name: Compile and capture log
         id: compile
