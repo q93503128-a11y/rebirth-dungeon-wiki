@@ -1,4 +1,4 @@
-name: Village Guardians CI probe
+name: Build Village Guardians v0.8.0
 
 on:
   push:
@@ -8,15 +8,80 @@ on:
     branches:
       - main
 
+permissions:
+  contents: read
+
 jobs:
-  probe:
+  build:
     runs-on: ubuntu-latest
+    timeout-minutes: 45
     steps:
-      - uses: actions/checkout@v4
-      - run: |
-          java -version
-          echo ok > probe.txt
-      - uses: actions/upload-artifact@v4
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Set up Java 25
+        uses: actions/setup-java@v4
         with:
-          name: vg-probe
-          path: probe.txt
+          distribution: temurin
+          java-version: '25'
+
+      - name: Set up Gradle 9.2.1
+        uses: gradle/actions/setup-gradle@v4
+        with:
+          gradle-version: '9.2.1'
+
+      - name: Reconstruct source
+        shell: bash
+        run: |
+          set -euo pipefail
+          cat vg-payload/part-* | base64 -d > vg.tar.xz
+          ACTUAL_SHA="$(sha256sum vg.tar.xz | cut -d' ' -f1)"
+          test "$ACTUAL_SHA" = "3c0423ca5fd7dad8a8afd1778e7c44fa2eb05aff94e826354b5957e749127194"
+          rm -rf vg-build
+          mkdir vg-build
+          tar -xJf vg.tar.xz -C vg-build
+
+      - name: Compile and capture log
+        id: compile
+        shell: bash
+        continue-on-error: true
+        run: |
+          set +e
+          cd vg-build
+          gradle --no-daemon --stacktrace --console=plain clean build > "$GITHUB_WORKSPACE/build.log" 2>&1
+          CODE=$?
+          echo "$CODE" > "$GITHUB_WORKSPACE/build.exit"
+          cat "$GITHUB_WORKSPACE/build.log"
+          exit "$CODE"
+
+      - name: Upload build diagnostics
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: vg-diagnostics
+          path: |
+            build.log
+            build.exit
+          if-no-files-found: warn
+
+      - name: Collect distributable JAR
+        if: steps.compile.outcome == 'success'
+        shell: bash
+        run: |
+          mkdir -p artifact
+          JAR="$(find vg-build/build/libs -maxdepth 1 -type f -name '*.jar' ! -name '*sources*' ! -name '*javadoc*' | head -n 1)"
+          test -n "$JAR"
+          cp "$JAR" artifact/VillageGuardians-26.2-v0.8.0-alpha.1.jar
+          sha256sum artifact/VillageGuardians-26.2-v0.8.0-alpha.1.jar > artifact/VillageGuardians-26.2-v0.8.0-alpha.1.jar.sha256
+
+      - name: Upload JAR
+        if: steps.compile.outcome == 'success'
+        uses: actions/upload-artifact@v4
+        with:
+          name: VillageGuardians-26.2-v0.8.0-alpha.1
+          path: artifact/*
+          if-no-files-found: error
+
+      - name: Fail when compilation failed
+        if: steps.compile.outcome != 'success'
+        run: exit 1
