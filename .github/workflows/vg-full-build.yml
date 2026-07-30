@@ -1,0 +1,86 @@
+name: Build Village Guardians Full Source
+
+on:
+  push:
+    branches:
+      - build/village-guardians-ci-probe
+  pull_request:
+    branches:
+      - main
+
+permissions:
+  contents: read
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    timeout-minutes: 45
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Set up Java 25
+        uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: '25'
+
+      - name: Set up Gradle 9.2.1
+        uses: gradle/actions/setup-gradle@v4
+        with:
+          gradle-version: '9.2.1'
+
+      - name: Restore full source
+        shell: bash
+        run: |
+          set -euo pipefail
+          echo '3c0423ca5fd7dad8a8afd1778e7c44fa2eb05aff94e826354b5957e749127194  vg-full-source.tar.xz' | sha256sum -c -
+          rm -rf vg-build
+          mkdir vg-build
+          tar -xJf vg-full-source.tar.xz -C vg-build
+          find vg-build/src/main/java -type f | wc -l
+
+      - name: Compile full source
+        id: compile
+        shell: bash
+        continue-on-error: true
+        run: |
+          set +e
+          cd vg-build
+          gradle --no-daemon --stacktrace --console=plain clean build > "$GITHUB_WORKSPACE/build.log" 2>&1
+          code=$?
+          echo "$code" > "$GITHUB_WORKSPACE/build.exit"
+          cat "$GITHUB_WORKSPACE/build.log"
+          exit "$code"
+
+      - name: Upload diagnostics
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: vg-full-diagnostics
+          path: |
+            build.log
+            build.exit
+          if-no-files-found: warn
+
+      - name: Collect full JAR
+        if: steps.compile.outcome == 'success'
+        shell: bash
+        run: |
+          mkdir -p artifact
+          jar_file="$(find vg-build/build/libs -maxdepth 1 -type f -name '*.jar' ! -name '*sources*' ! -name '*javadoc*' | head -n 1)"
+          test -n "$jar_file"
+          cp "$jar_file" artifact/VillageGuardians-26.2-v0.8.1-full-alpha.jar
+          sha256sum artifact/VillageGuardians-26.2-v0.8.1-full-alpha.jar > artifact/VillageGuardians-26.2-v0.8.1-full-alpha.jar.sha256
+
+      - name: Upload full JAR
+        if: steps.compile.outcome == 'success'
+        uses: actions/upload-artifact@v4
+        with:
+          name: VillageGuardians-26.2-v0.8.1-full-alpha
+          path: artifact/*
+          if-no-files-found: error
+
+      - name: Fail when compilation failed
+        if: steps.compile.outcome != 'success'
+        run: exit 1
