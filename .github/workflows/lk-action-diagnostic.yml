@@ -1,0 +1,83 @@
+name: Living Kingdoms NeoForge 26.2 Audit Build
+
+on:
+  pull_request:
+    branches: [main]
+    paths:
+      - '.lk-upload/READY'
+
+permissions:
+  contents: read
+
+jobs:
+  build-audit:
+    runs-on: ubuntu-latest
+    timeout-minutes: 60
+    steps:
+      - name: Check out temporary branch
+        uses: actions/checkout@v4
+
+      - name: Install Java 25
+        uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: '25'
+
+      - name: Reconstruct uploaded source archive
+        run: |
+          mkdir -p work
+          cat .lk-upload/part_* | base64 --decode > work/living-kingdoms-source.tar.xz
+          mkdir -p work/mod
+          tar -xJf work/living-kingdoms-source.tar.xz -C work/mod
+          test -f work/mod/build.gradle
+          test -f work/mod/src/main/java/io/github/moonseungjun/livingkingdoms/LivingKingdoms.java
+
+      - name: Install official NeoForge 26.2 Gradle wrapper
+        run: |
+          git clone --depth 1 https://github.com/NeoForgeMDKs/MDK-26.2-ModDevGradle.git work/mdk
+          cp work/mdk/gradlew work/mod/gradlew
+          cp work/mdk/gradlew.bat work/mod/gradlew.bat
+          mkdir -p work/mod/gradle/wrapper
+          cp work/mdk/gradle/wrapper/gradle-wrapper.jar work/mod/gradle/wrapper/gradle-wrapper.jar
+          chmod +x work/mod/gradlew
+          sed -i 's/^neo_version=.*/neo_version=26.2.0.38-beta/' work/mod/gradle.properties
+
+      - name: Compile and package against real NeoForge 26.2.0.38-beta
+        id: build
+        continue-on-error: true
+        working-directory: work/mod
+        run: |
+          set +e
+          ./gradlew --no-daemon --stacktrace clean build 2>&1 | tee ../build.log
+          code=${PIPESTATUS[0]}
+          echo "$code" > ../build-exit-code.txt
+          exit "$code"
+
+      - name: Collect audit evidence
+        if: always()
+        run: |
+          mkdir -p audit-output
+          cp work/build.log audit-output/build.log || true
+          cp work/build-exit-code.txt audit-output/build-exit-code.txt || true
+          cp work/mod/gradle.properties audit-output/gradle.properties || true
+          find work/mod/build/libs -maxdepth 1 -type f -name '*.jar' -exec cp {} audit-output/ \; 2>/dev/null || true
+          find work/mod/build/reports -type f -exec cp --parents {} audit-output/ \; 2>/dev/null || true
+          printf 'java=' > audit-output/environment.txt
+          java -version >> audit-output/environment.txt 2>&1
+          ./work/mod/gradlew --version >> audit-output/environment.txt 2>&1 || true
+          find audit-output -type f -printf '%p %s bytes\n' | sort
+
+      - name: Upload build and diagnostics
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: living-kingdoms-26.2-audit-build
+          path: audit-output
+          retention-days: 3
+          if-no-files-found: error
+
+      - name: Fail workflow when Gradle build failed
+        if: always()
+        run: |
+          test -f work/build-exit-code.txt
+          test "$(cat work/build-exit-code.txt)" = "0"
