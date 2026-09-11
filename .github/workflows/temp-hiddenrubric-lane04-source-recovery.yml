@@ -12,77 +12,127 @@ permissions:
 jobs:
   recover:
     runs-on: ubuntu-latest
-    timeout-minutes: 5
+    timeout-minutes: 20
     steps:
-      - name: Recover known LMArena rows without retaining model outputs
+      - name: Install pinned-source reader
+        run: python -m pip install --disable-pip-version-check pyarrow huggingface_hub hf_xet
+      - name: Scan pinned LMArena source; persist human-user-only rows
         shell: bash
         run: |
           python - <<'PY'
-          import concurrent.futures, hashlib, json, urllib.parse, urllib.request
+          import hashlib, json, re
+          from pathlib import Path
+          import pyarrow.parquet as pq
+          from huggingface_hub import hf_hub_download
 
-          DATASET='lmarena-ai/arena-human-preference-140k'; CONFIG='default'; SPLIT='train'
-          TARGETS=[
-              ('ac3bba5f-a55e-49ef-a83a-e54892c849bb',0,'Senior Management','approval_from_actor'),
-              ('8c02f215-e1db-48e2-8de8-543ed61bb5b7',0,'senior management','review_by_actor'),
-              ('baacddce-6b47-468a-a812-fa3c77590116',7,'evaluating committee','evaluate_by_actor'),
-              ('8b1cfa16-9c5d-477a-a321-79a214d7aaae',0,'Module Team','grade_by_actor'),
-              ('9e88b8ad-fa51-4276-9571-53ddde8e86f5',1,'teacher marker','grade_by_actor'),
-              ('e2848d8e-ee40-44b0-b83c-ce0b1f239a88',0,'schools','approval_from_actor'),
-              ('6a1c9bf5-d756-45fe-8a30-db80bac937ed',0,'Selection Committee','evaluate_by_actor'),
-          ]
+          DATASET='lmarena-ai/arena-human-preference-140k'
+          REV='a9cb587ee0906192dc1fc5e51778282f36c6bf35'
+          SHARDS=[f'data/train-{i:05d}-of-00007.parquet' for i in range(7)]
+          TARGETS={
+            ('ac3bba5f-a55e-49ef-a83a-e54892c849bb',0):('Senior Management','approval_from_actor'),
+            ('8c02f215-e1db-48e2-8de8-543ed61bb5b7',0):('senior management','review_by_actor'),
+            ('baacddce-6b47-468a-a812-fa3c77590116',7):('evaluating committee','evaluate_by_actor'),
+            ('8b1cfa16-9c5d-477a-a321-79a214d7aaae',0):('Module Team','grade_by_actor'),
+            ('9e88b8ad-fa51-4276-9571-53ddde8e86f5',1):('teacher marker','grade_by_actor'),
+            ('e2848d8e-ee40-44b0-b83c-ce0b1f239a88',0):('schools','approval_from_actor'),
+            ('6a1c9bf5-d756-45fe-8a30-db80bac937ed',0):('Selection Committee','evaluate_by_actor'),
+          }
+          ACTOR=re.compile(r'\b(?:my|our|the|a|an|their|his|her)?\s*(?:teacher marker|module team|hiring manager|peer reviewers?|reviewers?|thesis committee|dissertation committee|selection committee|review committee|grading committee|assessment panel|evaluation committee|admissions committee|interview panel|professors?|teachers?|instructors?|supervisors?|managers?|boss|advisors?|mentors?|recruiters?|editors?|examiners?|judges?|jury|board of directors|executive board|senior management|senior leadership|executive leadership|leadership|project sponsors?|sponsors?|auditors?|assessors?|evaluators?|graders?|team leads?|president|directors?|investors?|grant reviewers?)\b',re.I)
+          EVAL=re.compile(r'\b(?:review(?:ed|ing|s)?|grade(?:d|ing|s)?|mark(?:ed|ing|s)?|evaluate(?:d|ing|s)?|assess(?:ed|ing|es)?|approve(?:d|ing|s)?|judge(?:d|ing|s)?|score(?:d|ing|s)?|rate(?:d|ing|s)?|accept(?:ed|ing|s)?|reject(?:ed|ing|s)?|feedback|approval|critique|comments?|recommend(?:ed|ing|s)?|submit(?:ted|ting|s)?|submission)\b',re.I)
+          ART=re.compile(r'\b(?:report|paper|manuscript|essay|assignment|thesis|dissertation|proposal|application|resume|cv|portfolio|presentation|slides?|project|document|draft|submission|work|answer|response|deliverable|email|letter|plan|design|prototype|case study|abstract|statement|pitch)\b',re.I)
+          PREF=re.compile(r'\b(?:i prefer|i would prefer|we prefer|my preference|our preference|i hate|i dislike|i love|i like|we like|we love)\b',re.I)
+          STATE=re.compile(r'\b(?:actually|instead|rather than|change|replace|revise|update|scratch that|forget that|forget the|previous|earlier|above|keep the|keep it|preserve|retain|remove|omit|delete|no longer|rewrite|same as before|again but)\b',re.I)
+          PII=[re.compile(r'\b[A-Z0-9._%+-]+@[A-Z0-9.-]+\.[A-Z]{2,}\b',re.I),re.compile(r'(?<!\d)(?:\+?\d[\d .()\-]{7,}\d)(?!\d)'),re.compile(r'\b(?:sk-[A-Za-z0-9_-]{16,}|api[_-]?key\s*[:=])',re.I)]
+
           def text_of(msg):
-              if not isinstance(msg,dict): return ''
-              c=msg.get('content')
-              if isinstance(c,str): return c
-              if isinstance(c,list):
-                  chunks=[]
-                  for x in c:
-                      if isinstance(x,str): chunks.append(x)
-                      elif isinstance(x,dict) and isinstance(x.get('text'),str): chunks.append(x['text'])
-                  return '\n'.join(x for x in chunks if x)
-              return msg.get('text') if isinstance(msg.get('text'),str) else ''
+            if not isinstance(msg,dict): return ''
+            if isinstance(msg.get('text'),str): return msg['text']
+            c=msg.get('content')
+            if isinstance(c,str): return c
+            if isinstance(c,list):
+              xs=[]
+              for x in c:
+                if isinstance(x,str): xs.append(x)
+                elif isinstance(x,dict) and isinstance(x.get('text'),str): xs.append(x['text'])
+              return '\n'.join(x for x in xs if x)
+            return ''
           def user_turns(full):
-              out=[]
-              for entry in full or []:
-                  if not isinstance(entry,dict): continue
-                  u=entry.get('user')
-                  if isinstance(u,dict):
-                      t=text_of(u).strip()
-                      if t: out.append(t)
-                  elif entry.get('role')=='user':
-                      t=text_of(entry).strip()
-                      if t: out.append(t)
-              return out
-          def recover(target):
-              source_id,turn_index,actor,relation=target
-              q=urllib.parse.urlencode({'dataset':DATASET,'config':CONFIG,'split':SPLIT,'query':source_id,'offset':0,'length':10})
-              req=urllib.request.Request('https://datasets-server.huggingface.co/search?'+q,headers={'Accept':'application/json','User-Agent':'hiddenrubric-lane04-recovery/1.2'})
-              try:
-                  with urllib.request.urlopen(req,timeout=45) as r: payload=json.load(r)
-              except Exception as e:
-                  return {'sourceRowId':source_id,'status':'unresolved','reason':'search_error','detail':str(e)}
-              raw=payload.get('rows') or []
-              rows=[w for w in raw if (w.get('row') or {}).get('id')==source_id]
-              if len(rows)!=1:
-                  return {'sourceRowId':source_id,'status':'unresolved','reason':f'exact_id_rows_{len(rows)}','rawSearchRows':len(raw)}
-              wrapper=rows[0]; row=wrapper.get('row') or {}; turns=user_turns(row.get('full_conversation'))
-              session=row.get('evaluation_session_id')
-              if not isinstance(session,str) or not session:
-                  return {'sourceRowId':source_id,'status':'unresolved','reason':'missing_evaluation_session_id'}
-              if not (0 <= turn_index < len(turns)):
-                  return {'sourceRowId':source_id,'status':'unresolved','reason':'turn_index_out_of_range','userTurnCount':len(turns),'sourceEvaluationSessionId':session,'rowIndex':wrapper.get('row_idx')}
-              source=turns[turn_index]
-              return {'sourceDataset':DATASET,'sourceRowId':source_id,'sourceEvaluationSessionId':session,'rowIndex':wrapper.get('row_idx'),'turnIndex':turn_index,'actorHint':actor,'relationHint':relation,'source_en':source,'sourceSha256':hashlib.sha256(source.encode()).hexdigest(),'userTurnCount':len(turns),'assistantOutputsIncluded':False,'status':'source-recovered','trainingEligible':False}
-          with concurrent.futures.ThreadPoolExecutor(max_workers=len(TARGETS)) as ex:
-              recovered=list(ex.map(recover,TARGETS))
-          out={'schemaVersion':'router-stage05-lane04-known-source-recovery-v1','sourceRevision':'a9cb587ee0906192dc1fc5e51778282f36c6bf35','rows':recovered}
-          with open('/tmp/lane04-known-source-recovery.json','w',encoding='utf-8') as f: json.dump(out,f,ensure_ascii=False,indent=2)
-          print(json.dumps({'rows':len(recovered),'resolved':sum(r.get('status')=='source-recovered' for r in recovered),'unresolved':[r for r in recovered if r.get('status')!='source-recovered']},ensure_ascii=False))
+            out=[]
+            for entry in full or []:
+              if not isinstance(entry,dict): continue
+              u=entry.get('user')
+              if isinstance(u,dict):
+                t=text_of(u).strip()
+                if t: out.append(t)
+              elif str(entry.get('role') or '').lower()=='user':
+                t=text_of(entry).strip()
+                if t: out.append(t)
+            return out
+          def sent_windows(text):
+            starts=[0]
+            for m in re.finditer(r'[.!?\n]+',text): starts.append(m.end())
+            spans=[]
+            for i,s in enumerate(starts):
+              e=starts[i+1] if i+1<len(starts) else len(text)
+              if e>s: spans.append(text[s:e])
+            return spans
+          def relation(text):
+            lo=text.lower()
+            if re.search(r'\bapprove|approval\b',lo): return 'approval_from_actor'
+            if re.search(r'\bgrade|graded|grading|mark|marked|marking\b',lo): return 'grade_by_actor'
+            if re.search(r'\breject|rejected|rejecting\b',lo): return 'reject_by_actor'
+            if re.search(r'\bsubmit|submitted|submission\b',lo): return 'submit_to_actor'
+            if re.search(r'\bfeedback|comments?|critique\b',lo): return 'feedback_from_actor'
+            if re.search(r'\bevaluate|evaluated|evaluation|assess|assessed|assessing|judge|judges|judged|score|rate\b',lo): return 'evaluate_by_actor'
+            return 'review_by_actor'
+
+          known=[]; candidates=[]; seen=set(); global_index=0; raw_rows=0
+          for shard in SHARDS:
+            path=hf_hub_download(repo_id=DATASET,repo_type='dataset',filename=shard,revision=REV)
+            pf=pq.ParquetFile(path)
+            for batch in pf.iter_batches(batch_size=512,columns=['id','evaluation_session_id','full_conversation']):
+              data=batch.to_pylist()
+              for row in data:
+                rid=row.get('id'); sess=row.get('evaluation_session_id'); turns=user_turns(row.get('full_conversation'))
+                # Persist only selected human user turns; no assistant/model output is written.
+                for ti,text in enumerate(turns):
+                  key=(rid,ti)
+                  if key in TARGETS:
+                    actor,rel=TARGETS[key]
+                    known.append({'sourceDataset':DATASET,'sourceRevision':REV,'sourceArtifact':shard,'sourceRowId':rid,'sourceEvaluationSessionId':sess,'rowIndex':global_index,'turnIndex':ti,'actorHint':actor,'relationHint':rel,'source_en':text,'sourceSha256':hashlib.sha256(text.encode()).hexdigest(),'assistantOutputsIncluded':False,'status':'source-recovered' if rid and sess else 'incomplete','trainingEligible':False})
+                  if not text or any(p.search(text) for p in PII): continue
+                  # Discovery only: require actor + evaluation relation + requested-artifact signal.
+                  if not (ACTOR.search(text) and EVAL.search(text) and ART.search(text)): continue
+                  # Prefer compact current-output clauses. Higher-lane flags are retained for later exclusion.
+                  windows=[w for w in sent_windows(text) if ACTOR.search(w) and EVAL.search(w)]
+                  if not windows: continue
+                  actors=[]
+                  for m in ACTOR.finditer(text):
+                    a=m.group(0).strip()
+                    if len(a)>=3 and a.lower() not in {x.lower() for x in actors}: actors.append(a)
+                  ckey=(rid,ti)
+                  if ckey in seen: continue
+                  seen.add(ckey)
+                  candidates.append({'schemaVersion':'router-stage05-lane04-parquet-discovery-v1','sourceDataset':DATASET,'sourceRevision':REV,'sourceArtifact':shard,'sourceRowId':rid,'sourceEvaluationSessionId':sess,'rowIndex':global_index,'turnIndex':ti,'source_en':text,'actorHints':actors[:8],'relationHint':relation(' '.join(windows)),'evidenceWindows':windows[:4],'higherLanePrefilter':{'preference':bool(PREF.search(text)),'stateOpsFollowup':bool(ti>0 and STATE.search(text))},'assistantOutputsIncluded':False,'sourceComplete':bool(rid and sess),'trainingEligible':False})
+                raw_rows+=1; global_index+=1
+            # Free runner disk as we go; HF cache object may be shared but unlinking local pointer is safe to skip.
+            print(json.dumps({'shard':shard,'rowsSeen':raw_rows,'knownRecovered':len(known),'candidates':len(candidates)}))
+
+          Path('/tmp').mkdir(exist_ok=True)
+          with open('/tmp/lane04-known-source-recovery.json','w',encoding='utf-8') as f: json.dump({'schemaVersion':'router-stage05-lane04-known-source-recovery-v2','sourceRevision':REV,'rawRowsSeen':raw_rows,'rows':known},f,ensure_ascii=False,indent=2)
+          candidates.sort(key=lambda r:(r['higherLanePrefilter']['preference'] or r['higherLanePrefilter']['stateOpsFollowup'], len(r['source_en']), r['rowIndex'], r['turnIndex']))
+          with open('/tmp/lane04-evaluator-discovery.jsonl','w',encoding='utf-8') as f:
+            for r in candidates[:1000]: f.write(json.dumps(r,ensure_ascii=False)+'\n')
+          with open('/tmp/lane04-scan-summary.json','w',encoding='utf-8') as f: json.dump({'sourceRevision':REV,'rawRowsSeen':raw_rows,'knownTargets':len(TARGETS),'knownRecovered':len(known),'discoveryCandidatesTotal':len(candidates),'artifactCandidatesWritten':min(1000,len(candidates))},f,ensure_ascii=False,indent=2)
+          print(json.dumps({'DONE':True,'rawRowsSeen':raw_rows,'knownRecovered':len(known),'candidates':len(candidates)}))
           PY
-      - name: Upload recovery artifact
+      - name: Upload human-user-only recovery artifact
         uses: actions/upload-artifact@v4
         with:
-          name: lane04-known-source-recovery
-          path: /tmp/lane04-known-source-recovery.json
+          name: lane04-pinned-parquet-recovery
+          path: |
+            /tmp/lane04-known-source-recovery.json
+            /tmp/lane04-evaluator-discovery.jsonl
+            /tmp/lane04-scan-summary.json
           if-no-files-found: error
           retention-days: 1
