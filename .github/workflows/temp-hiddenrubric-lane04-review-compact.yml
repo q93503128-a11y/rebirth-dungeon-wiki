@@ -1,0 +1,44 @@
+name: TEMP HiddenRubric Lane04 Compact Review
+
+on:
+  push:
+    branches: [main]
+    paths:
+      - '.github/workflows/temp-hiddenrubric-lane04-review-compact.yml'
+
+permissions:
+  actions: read
+  contents: read
+
+jobs:
+  compact:
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    env:
+      GH_TOKEN: ${{ github.token }}
+    steps:
+      - name: Download prior private-ish workflow artifact and print compact human-only review queue
+        shell: bash
+        run: |
+          gh api repos/${GITHUB_REPOSITORY}/actions/artifacts/10277499233/zip > /tmp/a.zip
+          mkdir -p /tmp/a && unzip -q /tmp/a.zip -d /tmp/a
+          python - <<'PY'
+          import json
+          print('===KNOWN_TARGETS_BEGIN===')
+          doc=json.load(open('/tmp/a/lane04-known-source-recovery.json',encoding='utf-8'))
+          for r in doc.get('rows',[]):
+              print(json.dumps({k:r.get(k) for k in ['sourceRowId','sourceEvaluationSessionId','sourceArtifact','rowIndex','turnIndex','actorHint','relationHint','source_en','status']},ensure_ascii=False))
+          print('===KNOWN_TARGETS_END===')
+          print('===CANDIDATES_BEGIN===')
+          with open('/tmp/a/lane04-evaluator-discovery.jsonl',encoding='utf-8') as f:
+              for i,line in enumerate(f,1):
+                  r=json.loads(line)
+                  compact={
+                    'n':i,'sourceRowId':r.get('sourceRowId'),'turnIndex':r.get('turnIndex'),
+                    'rowIndex':r.get('rowIndex'),'actorHints':r.get('actorHints'),
+                    'relationHint':r.get('relationHint'),'evidenceWindows':r.get('evidenceWindows'),
+                    'higherLanePrefilter':r.get('higherLanePrefilter'),'sourceLength':len(r.get('source_en') or '')
+                  }
+                  print(json.dumps(compact,ensure_ascii=False))
+          print('===CANDIDATES_END===')
+          PY
