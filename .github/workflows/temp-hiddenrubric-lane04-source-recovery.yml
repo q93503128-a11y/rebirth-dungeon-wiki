@@ -12,17 +12,15 @@ permissions:
 jobs:
   recover:
     runs-on: ubuntu-latest
-    timeout-minutes: 10
+    timeout-minutes: 5
     steps:
       - name: Recover known LMArena rows without retaining model outputs
         shell: bash
         run: |
           python - <<'PY'
-          import json, urllib.parse, urllib.request, hashlib, time
+          import concurrent.futures, hashlib, json, urllib.parse, urllib.request
 
-          DATASET='lmarena-ai/arena-human-preference-140k'
-          CONFIG='default'
-          SPLIT='train'
+          DATASET='lmarena-ai/arena-human-preference-140k'; CONFIG='default'; SPLIT='train'
           TARGETS=[
               ('ac3bba5f-a55e-49ef-a83a-e54892c849bb',0,'Senior Management','approval_from_actor'),
               ('8c02f215-e1db-48e2-8de8-543ed61bb5b7',0,'senior management','review_by_actor'),
@@ -32,83 +30,54 @@ jobs:
               ('e2848d8e-ee40-44b0-b83c-ce0b1f239a88',0,'schools','approval_from_actor'),
               ('6a1c9bf5-d756-45fe-8a30-db80bac937ed',0,'Selection Committee','evaluate_by_actor'),
           ]
-
           def text_of(msg):
               if not isinstance(msg,dict): return ''
               c=msg.get('content')
               if isinstance(c,str): return c
               if isinstance(c,list):
-                  out=[]
-                  for item in c:
-                      if isinstance(item,str): out.append(item)
-                      elif isinstance(item,dict) and isinstance(item.get('text'),str): out.append(item['text'])
-                  return '\n'.join(x for x in out if x)
-              if isinstance(msg.get('text'),str): return msg['text']
-              return ''
-
+                  chunks=[]
+                  for x in c:
+                      if isinstance(x,str): chunks.append(x)
+                      elif isinstance(x,dict) and isinstance(x.get('text'),str): chunks.append(x['text'])
+                  return '\n'.join(x for x in chunks if x)
+              return msg.get('text') if isinstance(msg.get('text'),str) else ''
           def user_turns(full):
               out=[]
               for entry in full or []:
                   if not isinstance(entry,dict): continue
-                  user=entry.get('user')
-                  if isinstance(user,dict):
-                      t=text_of(user).strip()
+                  u=entry.get('user')
+                  if isinstance(u,dict):
+                      t=text_of(u).strip()
                       if t: out.append(t)
                   elif entry.get('role')=='user':
                       t=text_of(entry).strip()
                       if t: out.append(t)
               return out
-
-          recovered=[]
-          for source_id, turn_index, actor, relation in TARGETS:
-              q=urllib.parse.urlencode({
-                  'dataset':DATASET,'config':CONFIG,'split':SPLIT,
-                  'query':source_id,'offset':0,'length':10,
-              })
-              url='https://datasets-server.huggingface.co/search?'+q
-              req=urllib.request.Request(url,headers={'Accept':'application/json','User-Agent':'hiddenrubric-lane04-recovery/1.1'})
+          def recover(target):
+              source_id,turn_index,actor,relation=target
+              q=urllib.parse.urlencode({'dataset':DATASET,'config':CONFIG,'split':SPLIT,'query':source_id,'offset':0,'length':10})
+              req=urllib.request.Request('https://datasets-server.huggingface.co/search?'+q,headers={'Accept':'application/json','User-Agent':'hiddenrubric-lane04-recovery/1.2'})
               try:
-                  with urllib.request.urlopen(req,timeout=90) as r:
-                      payload=json.load(r)
+                  with urllib.request.urlopen(req,timeout=45) as r: payload=json.load(r)
               except Exception as e:
-                  recovered.append({'sourceRowId':source_id,'status':'unresolved','reason':'search_error','detail':str(e)})
-                  continue
-              rows=[w for w in (payload.get('rows') or []) if (w.get('row') or {}).get('id')==source_id]
+                  return {'sourceRowId':source_id,'status':'unresolved','reason':'search_error','detail':str(e)}
+              raw=payload.get('rows') or []
+              rows=[w for w in raw if (w.get('row') or {}).get('id')==source_id]
               if len(rows)!=1:
-                  recovered.append({'sourceRowId':source_id,'status':'unresolved','reason':f'exact_id_rows_{len(rows)}','rawSearchRows':len(payload.get('rows') or [])})
-                  continue
-              wrapper=rows[0]
-              row=wrapper.get('row') or {}
-              turns=user_turns(row.get('full_conversation'))
+                  return {'sourceRowId':source_id,'status':'unresolved','reason':f'exact_id_rows_{len(rows)}','rawSearchRows':len(raw)}
+              wrapper=rows[0]; row=wrapper.get('row') or {}; turns=user_turns(row.get('full_conversation'))
               session=row.get('evaluation_session_id')
               if not isinstance(session,str) or not session:
-                  recovered.append({'sourceRowId':source_id,'status':'unresolved','reason':'missing_evaluation_session_id'})
-                  continue
+                  return {'sourceRowId':source_id,'status':'unresolved','reason':'missing_evaluation_session_id'}
               if not (0 <= turn_index < len(turns)):
-                  recovered.append({'sourceRowId':source_id,'status':'unresolved','reason':'turn_index_out_of_range','userTurnCount':len(turns),'sourceEvaluationSessionId':session,'rowIndex':wrapper.get('row_idx')})
-                  continue
+                  return {'sourceRowId':source_id,'status':'unresolved','reason':'turn_index_out_of_range','userTurnCount':len(turns),'sourceEvaluationSessionId':session,'rowIndex':wrapper.get('row_idx')}
               source=turns[turn_index]
-              recovered.append({
-                  'sourceDataset':DATASET,
-                  'sourceRowId':source_id,
-                  'sourceEvaluationSessionId':session,
-                  'rowIndex':wrapper.get('row_idx'),
-                  'turnIndex':turn_index,
-                  'actorHint':actor,
-                  'relationHint':relation,
-                  'source_en':source,
-                  'sourceSha256':hashlib.sha256(source.encode()).hexdigest(),
-                  'userTurnCount':len(turns),
-                  'assistantOutputsIncluded':False,
-                  'status':'source-recovered',
-                  'trainingEligible':False,
-              })
-              time.sleep(0.2)
-
+              return {'sourceDataset':DATASET,'sourceRowId':source_id,'sourceEvaluationSessionId':session,'rowIndex':wrapper.get('row_idx'),'turnIndex':turn_index,'actorHint':actor,'relationHint':relation,'source_en':source,'sourceSha256':hashlib.sha256(source.encode()).hexdigest(),'userTurnCount':len(turns),'assistantOutputsIncluded':False,'status':'source-recovered','trainingEligible':False}
+          with concurrent.futures.ThreadPoolExecutor(max_workers=len(TARGETS)) as ex:
+              recovered=list(ex.map(recover,TARGETS))
           out={'schemaVersion':'router-stage05-lane04-known-source-recovery-v1','sourceRevision':'a9cb587ee0906192dc1fc5e51778282f36c6bf35','rows':recovered}
-          path='/tmp/lane04-known-source-recovery.json'
-          with open(path,'w',encoding='utf-8') as f: json.dump(out,f,ensure_ascii=False,indent=2)
-          print(json.dumps({'rows':len(recovered),'resolved':sum(r.get('status')=='source-recovered' for r in recovered)},ensure_ascii=False))
+          with open('/tmp/lane04-known-source-recovery.json','w',encoding='utf-8') as f: json.dump(out,f,ensure_ascii=False,indent=2)
+          print(json.dumps({'rows':len(recovered),'resolved':sum(r.get('status')=='source-recovered' for r in recovered),'unresolved':[r for r in recovered if r.get('status')!='source-recovered']},ensure_ascii=False))
           PY
       - name: Upload recovery artifact
         uses: actions/upload-artifact@v4
